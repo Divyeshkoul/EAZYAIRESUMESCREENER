@@ -269,7 +269,13 @@ def initialize_session_state():
 
 initialize_session_state()
 
-
+# Page configuration
+st.set_page_config(
+    layout="wide", 
+    page_title="EazyAI Resume Screener",
+    page_icon="🚀",
+    initial_sidebar_state="expanded"
+)
 
 # Initialize BlobServiceClient
 @st.cache_resource
@@ -531,8 +537,8 @@ if jd and analyze and not st.session_state["analysis_done"]:
                     # Upload to blob (if not already there)
                     upload_to_blob(file_bytes, file_name, AZURE_CONFIG["resumes_container"])
                     
-                    # Parse resume
-                    resume_text = parse_resume(file_bytes)
+                    # Parse resume with filename for format detection
+                    resume_text = parse_resume(file_bytes, file_name)
                     contact = extract_contact_info(resume_text)
 
                     # Compute similarity
@@ -563,8 +569,8 @@ if jd and analyze and not st.session_state["analysis_done"]:
                     # Upload to blob
                     upload_to_blob(file_bytes, file_name + ".pdf", AZURE_CONFIG["resumes_container"])
 
-                    # Parse resume
-                    resume_text = parse_resume(file_bytes)
+                    # Parse resume with filename for format detection
+                    resume_text = parse_resume(file_bytes, file.name)
                     contact = extract_contact_info(resume_text)
 
                     # Compute similarity
