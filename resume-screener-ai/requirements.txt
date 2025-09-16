@@ -41,5 +41,7 @@ google-api-python-client
 psutil
 
 # Async support
-asyncio-compat
+asyncio
+
+
 
