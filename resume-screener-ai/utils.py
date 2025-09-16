@@ -1,10 +1,6 @@
 # Enhanced utils.py — Multi-format Resume Parsing (PDF, DOCX, DOC), Embeddings, Contact Extraction, Azure Uploads
 
 import re
-import fitz  # PyMuPDF
-import docx
-import zipfile
-from docx import Document
 import numpy as np
 import tiktoken
 import functools
@@ -18,6 +14,27 @@ from constants import AZURE_CONFIG, MODEL_CONFIG, PERFORMANCE_CONFIG
 from openai import AzureOpenAI
 import pandas as pd
 import io
+import zipfile
+
+# Import handling with fallbacks
+try:
+    import fitz  # PyMuPDF
+    PDF_SUPPORT = True
+except ImportError:
+    logging.warning("PyMuPDF not available - PDF support disabled")
+    PDF_SUPPORT = False
+
+try:
+    from docx import Document
+    DOCX_SUPPORT = True
+except ImportError:
+    try:
+        import docx
+        from docx import Document
+        DOCX_SUPPORT = True
+    except ImportError:
+        logging.warning("python-docx not available - DOCX support disabled")
+        DOCX_SUPPORT = False
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -27,8 +44,8 @@ client = AzureOpenAI(
     api_key=AZURE_CONFIG["openai_key"],
     api_version=AZURE_CONFIG["api_version"],
     azure_endpoint=AZURE_CONFIG["azure_endpoint"],
-    max_retries=PERFORMANCE_CONFIG["max_retries"],
-    timeout=PERFORMANCE_CONFIG["request_timeout"]
+    max_retries=PERFORMANCE_CONFIG.get("max_retries", 3),
+    timeout=PERFORMANCE_CONFIG.get("request_timeout", 30.0)
 )
 
 # ==========================
@@ -46,9 +63,15 @@ def parse_resume(file_bytes: bytes, filename: str = "resume", max_pages: int = 1
         file_extension = filename.lower().split('.')[-1] if '.' in filename else 'pdf'
         
         if file_extension == 'pdf':
-            text = parse_pdf(file_bytes, max_pages)
+            if PDF_SUPPORT:
+                text = parse_pdf(file_bytes, max_pages)
+            else:
+                text = "PDF parsing not available - please install PyMuPDF"
         elif file_extension in ['docx', 'doc']:
-            text = parse_word_document(file_bytes, file_extension)
+            if DOCX_SUPPORT:
+                text = parse_word_document(file_bytes, file_extension)
+            else:
+                text = "DOCX/DOC parsing not available - please install python-docx"
         else:
             # Fallback: try to detect format by content
             text = parse_with_format_detection(file_bytes, max_pages)
@@ -67,6 +90,9 @@ def parse_resume(file_bytes: bytes, filename: str = "resume", max_pages: int = 1
 
 def parse_pdf(file_bytes: bytes, max_pages: int = 10) -> str:
     """Parse PDF files using PyMuPDF"""
+    if not PDF_SUPPORT:
+        return "PDF parsing not supported - PyMuPDF not installed"
+    
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             text_parts = []
@@ -88,10 +114,13 @@ def parse_pdf(file_bytes: bytes, max_pages: int = 10) -> str:
             return "\n\n".join(text_parts)
     except Exception as e:
         logger.error(f"PDF parsing error: {str(e)}")
-        raise
+        return f"Error parsing PDF: {str(e)}"
 
 def parse_word_document(file_bytes: bytes, file_extension: str) -> str:
     """Parse DOCX and DOC files"""
+    if not DOCX_SUPPORT:
+        return "Word document parsing not supported - python-docx not installed"
+    
     try:
         if file_extension == 'docx':
             return parse_docx(file_bytes)
@@ -101,10 +130,13 @@ def parse_word_document(file_bytes: bytes, file_extension: str) -> str:
             raise ValueError(f"Unsupported Word format: {file_extension}")
     except Exception as e:
         logger.error(f"Word document parsing error: {str(e)}")
-        raise
+        return f"Error parsing Word document: {str(e)}"
 
 def parse_docx(file_bytes: bytes) -> str:
     """Parse DOCX files using python-docx"""
+    if not DOCX_SUPPORT:
+        return "DOCX parsing not supported - python-docx not installed"
+    
     try:
         # Create a BytesIO object from bytes
         doc_io = io.BytesIO(file_bytes)
@@ -118,17 +150,26 @@ def parse_docx(file_bytes: bytes) -> str:
                 text_parts.append(paragraph.text.strip())
         
         # Extract text from tables
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = []
-                for cell in row.cells:
-                    cell_text = cell.text.strip()
-                    if cell_text:
-                        row_text.append(cell_text)
-                if row_text:
-                    text_parts.append(" | ".join(row_text))
+        try:
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = []
+                    for cell in row.cells:
+                        cell_text = cell.text.strip()
+                        if cell_text:
+                            row_text.append(cell_text)
+                    if row_text:
+                        text_parts.append(" | ".join(row_text))
+        except Exception as e:
+            logger.warning(f"Error extracting table content: {str(e)}")
         
-        return "\n".join(text_parts)
+        result = "\n".join(text_parts)
+        
+        # If extraction failed or very little content, try ZIP method
+        if len(result.strip()) < 50:
+            return extract_docx_as_zip(file_bytes)
+        
+        return result
         
     except Exception as e:
         logger.error(f"DOCX parsing error: {str(e)}")
@@ -147,7 +188,7 @@ def extract_docx_as_zip(file_bytes: bytes) -> str:
                 # Basic XML content extraction (remove tags)
                 text = re.sub(r'<[^>]+>', ' ', content.decode('utf-8', errors='ignore'))
                 text = re.sub(r'\s+', ' ', text).strip()
-                return text
+                return text if text else "Could not extract DOCX content"
             except KeyError:
                 # If document.xml is not found, try other files
                 text_parts = []
@@ -161,10 +202,10 @@ def extract_docx_as_zip(file_bytes: bytes) -> str:
                                 text_parts.append(clean_text)
                         except Exception:
                             continue
-                return "\n".join(text_parts)
+                return "\n".join(text_parts) if text_parts else "Could not extract DOCX content"
     except Exception as e:
         logger.error(f"DOCX ZIP extraction failed: {str(e)}")
-        return "Error extracting DOCX content"
+        return f"Error extracting DOCX content: {str(e)}"
 
 def parse_doc_fallback(file_bytes: bytes) -> str:
     """
@@ -180,11 +221,12 @@ def parse_doc_fallback(file_bytes: bytes) -> str:
         text = re.sub(r'\s+', ' ', text).strip()
         
         # If the text is mostly gibberish, return a message
-        readable_chars = len(re.findall(r'[a-zA-Z\s]', text))
-        if readable_chars < len(text) * 0.3:  # Less than 30% readable characters
-            return "DOC format detected but content extraction is limited. Please convert to DOCX or PDF for better parsing."
+        if len(text) > 0:
+            readable_chars = len(re.findall(r'[a-zA-Z\s]', text))
+            if readable_chars < len(text) * 0.3:  # Less than 30% readable characters
+                return "DOC format detected but content extraction is limited. Please convert to DOCX or PDF for better parsing."
         
-        return text
+        return text if text else "Could not extract DOC content"
         
     except Exception as e:
         logger.error(f"DOC parsing error: {str(e)}")
@@ -195,20 +237,29 @@ def parse_with_format_detection(file_bytes: bytes, max_pages: int = 10) -> str:
     try:
         # Check for PDF signature
         if file_bytes.startswith(b'%PDF'):
-            return parse_pdf(file_bytes, max_pages)
+            if PDF_SUPPORT:
+                return parse_pdf(file_bytes, max_pages)
+            else:
+                return "PDF detected but parsing not available"
         
         # Check for DOCX signature (ZIP file with specific content)
         elif file_bytes.startswith(b'PK\x03\x04'):
             try:
                 # Try to parse as DOCX first
-                return parse_docx(file_bytes)
+                if DOCX_SUPPORT:
+                    return parse_docx(file_bytes)
+                else:
+                    return "DOCX detected but parsing not available"
             except:
                 # If DOCX parsing fails, might be another ZIP format
                 return "Unsupported ZIP-based document format"
         
         # Check for DOC signature
         elif file_bytes.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'):
-            return parse_doc_fallback(file_bytes)
+            if DOCX_SUPPORT:
+                return parse_doc_fallback(file_bytes)
+            else:
+                return "DOC detected but parsing not available"
         
         else:
             # Try as text file
@@ -250,22 +301,31 @@ def clean_resume_text(text: str) -> str:
 @functools.lru_cache(maxsize=1)
 def get_tokenizer():
     """Cached tokenizer for performance"""
-    return tiktoken.encoding_for_model("gpt-4")
+    try:
+        return tiktoken.encoding_for_model("gpt-4")
+    except Exception as e:
+        logger.error(f"Failed to load tokenizer: {str(e)}")
+        # Fallback to a basic tokenizer
+        return None
 
 def chunk_text(text: str, max_tokens: int = None, overlap: int = None) -> List[str]:
     """
     Enhanced text chunking with configurable parameters
     """
     if max_tokens is None:
-        max_tokens = PERFORMANCE_CONFIG["chunk_size"]
+        max_tokens = PERFORMANCE_CONFIG.get("chunk_size", 800)
     if overlap is None:
-        overlap = PERFORMANCE_CONFIG["chunk_overlap"]
+        overlap = PERFORMANCE_CONFIG.get("chunk_overlap", 100)
     
     if not text:
         return [""]
     
     try:
         enc = get_tokenizer()
+        if enc is None:
+            # Fallback to character-based chunking
+            return chunk_text_by_chars(text, max_tokens * 4, overlap * 4)
+        
         tokens = enc.encode(text)
         
         if len(tokens) <= max_tokens:
@@ -280,7 +340,7 @@ def chunk_text(text: str, max_tokens: int = None, overlap: int = None) -> List[s
             i += max_tokens - overlap
             
             # Limit number of chunks for performance
-            if len(chunks) >= PERFORMANCE_CONFIG["max_resume_chunks"]:
+            if len(chunks) >= PERFORMANCE_CONFIG.get("max_resume_chunks", 5):
                 break
         
         return chunks
@@ -288,6 +348,23 @@ def chunk_text(text: str, max_tokens: int = None, overlap: int = None) -> List[s
     except Exception as e:
         logger.error(f"Text chunking failed: {str(e)}")
         return [text[:3000]]  # Fallback to simple truncation
+
+def chunk_text_by_chars(text: str, max_chars: int, overlap: int) -> List[str]:
+    """Fallback character-based chunking"""
+    if len(text) <= max_chars:
+        return [text]
+    
+    chunks = []
+    i = 0
+    while i < len(text):
+        chunk = text[i:i + max_chars]
+        chunks.append(chunk)
+        i += max_chars - overlap
+        
+        if len(chunks) >= 5:  # Limit chunks
+            break
+    
+    return chunks
 
 def get_text_chunks(text: str, max_tokens: int = 800, overlap: int = 100) -> List[str]:
     """Wrapper for backward compatibility"""
@@ -955,3 +1032,175 @@ def extract_top_skills_from_results(results: List[Dict[str, Any]]) -> List[Dict[
     # Sort by frequency and return top 10
     sorted_skills = sorted(skill_counts.items(), key=lambda x: x[1], reverse=True)
     return [{"skill": skill, "count": count} for skill, count in sorted_skills[:10]]
+
+# ==========================
+# 🧪 Testing Utilities
+# ==========================
+
+def create_test_resume_data(count: int = 5) -> List[Dict[str, Any]]:
+    """Generate test resume data for development/testing"""
+    test_data = []
+    
+    for i in range(count):
+        test_data.append({
+            "resume_file": f"test_resume_{i+1}.pdf",
+            "resume_text": f"""
+            John Doe {i+1}
+            Email: john.doe{i+1}@email.com
+            Phone: +1-555-{i+1:03d}-{i+1:04d}
+            
+            PROFESSIONAL EXPERIENCE
+            Software Developer at Tech Company
+            - Developed web applications using Python and React
+            - Collaborated with cross-functional teams
+            - Improved system performance by 20%
+            
+            EDUCATION
+            Bachelor of Science in Computer Science
+            University of Technology, 2020
+            
+            SKILLS
+            Python, JavaScript, React, SQL, AWS
+            """,
+            "contact": {
+                "name": f"John Doe {i+1}",
+                "email": f"john.doe{i+1}@email.com", 
+                "phone": f"+1-555-{i+1:03d}-{i+1:04d}"
+            },
+            "jd_similarity": 75.0 + (i * 5)  # Varying similarity scores
+        })
+    
+    return test_data
+
+# ==========================
+# 📊 Performance Monitoring
+# ==========================
+
+class PerformanceTracker:
+    """Track and analyze performance metrics"""
+    
+    def __init__(self):
+        self.metrics = []
+        self.start_time = None
+    
+    def start_tracking(self):
+        """Start performance tracking"""
+        self.start_time = time.time()
+        self.metrics = []
+    
+    def record_metric(self, operation: str, duration: float, **kwargs):
+        """Record a performance metric"""
+        self.metrics.append({
+            "operation": operation,
+            "duration": duration,
+            "timestamp": time.time(),
+            **kwargs
+        })
+    
+    def get_summary(self) -> Dict[str, Any]:
+        """Get performance summary"""
+        if not self.metrics:
+            return {"error": "No metrics recorded"}
+        
+        total_time = time.time() - self.start_time if self.start_time else 0
+        durations = [m["duration"] for m in self.metrics]
+        
+        return {
+            "total_operations": len(self.metrics),
+            "total_time": total_time,
+            "average_duration": np.mean(durations),
+            "min_duration": np.min(durations),
+            "max_duration": np.max(durations),
+            "std_duration": np.std(durations),
+            "operations_per_second": len(self.metrics) / total_time if total_time > 0 else 0
+        }
+    
+    def get_detailed_report(self) -> str:
+        """Get detailed performance report"""
+        summary = self.get_summary()
+        if "error" in summary:
+            return "No performance data available"
+        
+        report = f"""
+Performance Report
+==================
+Total Operations: {summary['total_operations']}
+Total Time: {format_processing_time(summary['total_time'])}
+Average Duration: {format_processing_time(summary['average_duration'])}
+Min/Max Duration: {format_processing_time(summary['min_duration'])} / {format_processing_time(summary['max_duration'])}
+Operations/Second: {summary['operations_per_second']:.2f}
+        """
+        
+        return report.strip()
+
+# Global performance tracker
+performance_tracker = PerformanceTracker()
+
+# ==========================
+# 🔄 System Status Checks
+# ==========================
+
+def get_system_status() -> Dict[str, Any]:
+    """Get overall system status including library availability"""
+    status = {
+        "pdf_support": PDF_SUPPORT,
+        "docx_support": DOCX_SUPPORT,
+        "embedding_available": True,  # Assume True since OpenAI client is initialized
+        "azure_available": True,  # Assume True since imports succeeded
+        "supported_formats": []
+    }
+    
+    if PDF_SUPPORT:
+        status["supported_formats"].append("PDF")
+    if DOCX_SUPPORT:
+        status["supported_formats"].extend(["DOCX", "DOC"])
+    
+    # Test basic functionality
+    try:
+        # Test tokenizer
+        enc = get_tokenizer()
+        status["tokenizer_available"] = enc is not None
+    except Exception as e:
+        status["tokenizer_available"] = False
+        status["tokenizer_error"] = str(e)
+    
+    # Test embedding generation with a simple text
+    try:
+        test_embedding = get_embedding_cached("test")
+        status["embedding_test"] = len(test_embedding) > 0
+    except Exception as e:
+        status["embedding_test"] = False
+        status["embedding_error"] = str(e)
+    
+    return status
+
+def check_file_support(filename: str) -> Dict[str, Any]:
+    """Check if a specific file type is supported"""
+    file_format = get_file_format_from_name(filename)
+    
+    support_info = {
+        "filename": filename,
+        "format": file_format,
+        "is_supported": False,
+        "parser_available": False,
+        "recommendations": []
+    }
+    
+    if file_format == 'pdf':
+        support_info["is_supported"] = True
+        support_info["parser_available"] = PDF_SUPPORT
+        if not PDF_SUPPORT:
+            support_info["recommendations"].append("Install PyMuPDF for PDF support")
+    
+    elif file_format in ['docx', 'doc']:
+        support_info["is_supported"] = True
+        support_info["parser_available"] = DOCX_SUPPORT
+        if not DOCX_SUPPORT:
+            support_info["recommendations"].append("Install python-docx for Word document support")
+        if file_format == 'doc':
+            support_info["recommendations"].append("Convert to DOCX or PDF for better parsing")
+    
+    else:
+        support_info["recommendations"].append("Use PDF, DOCX, or DOC format for resume files")
+    
+    return support_info
