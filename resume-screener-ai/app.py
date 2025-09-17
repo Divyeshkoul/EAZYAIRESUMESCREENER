@@ -1,4 +1,28 @@
-import streamlit as st
+# Enhanced Header with OAuth Gmail Configuration
+st.markdown('<h1 class="main-title">EazyAI</h1>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Intelligent Resume Screening Platform with OAuth Gmail Integration</p>', unsafe_allow_html=True)
+
+# Gmail Sync Status and Configuration
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    gmail_status = render_oauth_gmail_sync_status()
+
+with col2:
+    st.markdown("### 🔄 Manual Sync")
+    if oauth_gmail_service and gmail_status.get("auth_status") == "Authenticated":
+        # Time filter configuration for manual sync
+        with st.expander("⚙️ Sync Settings", expanded=True):
+            time_filter = render_gmail_time_filter()
+        
+        if st.button("📧 Sync Gmail Now", type="secondary", use_container_width=True):
+            if not gmail_status.get("is_active", False):
+                with st.spinner("Syncing Gmail with filters..."):
+                    result = oauth_gmail_service.sync_now(time_filter)
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.success(f"Sync completed! {result.get('files_uploadeimport streamlit as st
 import pandas as pd
 import base64
 import asyncio
@@ -459,21 +483,26 @@ with st.sidebar:
         st.info("📧 Resumes will be loaded from Azure Blob Storage (including Gmail sync)")
 
     # Gmail sync controls in sidebar
-    st.markdown('<div class="sidebar-section"><h3>📧 Gmail Integration</h3></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section"><h3>📧 OAuth Gmail Integration</h3></div>', unsafe_allow_html=True)
     
-    if gmail_service:
-        sync_status = gmail_service.get_status()
+    if oauth_gmail_service:
+        sync_status = oauth_gmail_service.get_status()
+        auth_status = sync_status.get("auth_status", "Not authenticated")
         
-        st.markdown(f"""
-        **Status:** {'🔄 Active' if sync_status.get('is_active') else '✅ Ready'}  
-        **Last Sync:** {sync_status.get('last_sync', 'Never')}  
-        **Files Uploaded:** {sync_status.get('files_uploaded', 0)}
-        """)
-        
-        if sync_status.get("errors"):
-            st.warning(f"⚠️ {len(sync_status['errors'])} sync errors")
+        if auth_status == "Authenticated":
+            st.markdown(f"""
+            **Status:** {'🔄 Active' if sync_status.get('is_active') else '✅ Ready'}  
+            **Last Sync:** {sync_status.get('last_sync', 'Never')}  
+            **Files Uploaded:** {sync_status.get('files_uploaded', 0)}
+            """)
+            
+            if sync_status.get("errors"):
+                st.warning(f"⚠️ {len(sync_status['errors'])} sync errors")
+        else:
+            st.error(f"❌ {auth_status}")
+            st.info("Click 'Authenticate Gmail' in the main area")
     else:
-        st.error("❌ Gmail service unavailable")
+        st.error("❌ OAuth Gmail service unavailable")
 
     st.markdown("---")
     analyze = st.button("🚀 Start Analysis", type="primary", use_container_width=True)
