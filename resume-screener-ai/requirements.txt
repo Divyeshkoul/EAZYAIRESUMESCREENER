@@ -44,4 +44,27 @@ psutil
 asyncio
 
 
+scikit-learn
+tiktoken
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
+asyncio
+logging
+functools
+io
+zipfile
+re
+time
+typing
+base64
+datetime
+smtplib
+email
+uuid
+threading
+psutil
+
+
 
