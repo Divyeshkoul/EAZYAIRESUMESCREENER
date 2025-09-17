@@ -2,7 +2,6 @@
 
 import re
 import numpy as np
-import tiktoken
 import functools
 import asyncio
 import logging
@@ -35,6 +34,13 @@ except ImportError:
     except ImportError:
         logging.warning("python-docx not available - DOCX support disabled")
         DOCX_SUPPORT = False
+
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    logging.warning("tiktoken not available - using character-based chunking")
+    TIKTOKEN_AVAILABLE = False
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -300,12 +306,14 @@ def clean_resume_text(text: str) -> str:
 
 @functools.lru_cache(maxsize=1)
 def get_tokenizer():
-    """Cached tokenizer for performance"""
+    """Cached tokenizer for performance with fallback"""
+    if not TIKTOKEN_AVAILABLE:
+        return None
+    
     try:
         return tiktoken.encoding_for_model("gpt-4")
     except Exception as e:
         logger.error(f"Failed to load tokenizer: {str(e)}")
-        # Fallback to a basic tokenizer
         return None
 
 def chunk_text(text: str, max_tokens: int = None, overlap: int = None) -> List[str]:
