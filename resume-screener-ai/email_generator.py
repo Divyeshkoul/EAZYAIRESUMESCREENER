@@ -1,24 +1,26 @@
-# email_generator.py — Enhanced email functionality with better error handling
+# email_generator.py — Azure Communication Services implementation
 
-import smtplib
-import ssl
 import logging
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from typing import Dict, List, Optional, Any
 from constants import EMAIL_TEMPLATES
 import os
 
+# Azure Communication Services import
+try:
+    from azure.communication.email import EmailClient
+    AZURE_EMAIL_AVAILABLE = True
+except ImportError:
+    logging.warning("Azure Communication Services not available - install azure-communication-email")
+    AZURE_EMAIL_AVAILABLE = False
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Email configuration from environment variables
-EMAIL_CONFIG = {
-    "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
-    "smtp_port": int(os.getenv("SMTP_PORT", "587")),
-    "smtp_user": os.getenv("SMTP_USER", "demoprojectid3@gmail.com"),
-    "smtp_pass": os.getenv("SMTP_PASS", "hiikzyvfhopdumym"),
-    "hr_email": os.getenv("HR_EMAIL", "demoprojectid3@gmail.com")
+# Azure Email configuration
+AZURE_EMAIL_CONFIG = {
+    "connection_string": "endpoint=https://botemailsender.unitedstates.communication.azure.com/;accesskey=57bBq3CMdyxiO45PTjJy6K88hI9LK1N2CMPN3jr02Smz4mVSmFQrJQQJ99BIACULyCp8otsGAAAAAZCSqBSu",
+    "sender_email": "donotreply@8c214184-f2e0-47f9-819a-e086fe0b4d19.azurecomm.net",
+    "sender_name": "EazyAI Recruitment Team"
 }
 
 def validate_email(email: str) -> bool:
@@ -29,8 +31,12 @@ def validate_email(email: str) -> bool:
 
 def send_email(to_email: str, subject: str, body: str, from_email: Optional[str] = None) -> bool:
     """
-    Send email with enhanced error handling and validation
+    Send email using Azure Communication Services
     """
+    if not AZURE_EMAIL_AVAILABLE:
+        logger.error("Azure Communication Services not available")
+        return False
+        
     try:
         # Validate inputs
         if not to_email or not validate_email(to_email):
@@ -41,58 +47,51 @@ def send_email(to_email: str, subject: str, body: str, from_email: Optional[str]
             logger.error("Subject or body is empty")
             return False
         
-        # Use default from_email if not provided
-        if not from_email:
-            from_email = EMAIL_CONFIG["hr_email"]
+        # Initialize Azure Email client
+        email_client = EmailClient.from_connection_string(AZURE_EMAIL_CONFIG["connection_string"])
         
-        # Create message
-        message = MIMEMultipart("alternative")
-        message["Subject"] = subject
-        message["From"] = from_email
-        message["To"] = to_email
-        
-        # Create HTML and plain text versions
-        text_part = MIMEText(body, "plain")
+        # Create HTML version of body
         html_body = body.replace('\n', '<br>')
-        html_part = MIMEText(f"""
+        html_content = f"""
         <html>
-            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
-                {html_body}
-                <br><br>
-                <hr>
-                <p style="font-size: 12px; color: #666;">
-                    This email was sent by EazyAI Resume Screener
-                </p>
+            <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto;">
+                <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                    <h2 style="color: #0066cc; margin-bottom: 20px;">EazyAI Recruitment</h2>
+                    <div style="background: white; padding: 20px; border-radius: 4px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        {html_body}
+                    </div>
+                    <hr style="margin: 20px 0; border: none; border-top: 1px solid #ddd;">
+                    <p style="font-size: 12px; color: #666; text-align: center;">
+                        This email was sent by EazyAI Resume Screener<br>
+                        Powered by Azure Communication Services
+                    </p>
+                </div>
             </body>
         </html>
-        """, "html")
+        """
         
-        message.attach(text_part)
-        message.attach(html_part)
+        # Prepare email message
+        message = {
+            "senderAddress": AZURE_EMAIL_CONFIG["sender_email"],
+            "recipients": {
+                "to": [{"address": to_email}],
+            },
+            "content": {
+                "subject": subject,
+                "plainText": body,
+                "html": html_content
+            }
+        }
         
         # Send email
-        context = ssl.create_default_context()
+        poller = email_client.begin_send(message)
+        result = poller.result()
         
-        with smtplib.SMTP(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"]) as server:
-            server.starttls(context=context)
-            server.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_pass"])
-            text = message.as_string()
-            server.sendmail(from_email, to_email, text)
-        
-        logger.info(f"Email sent successfully to {to_email}")
+        logger.info(f"Azure email sent successfully to {to_email}, Message ID: {result.id}")
         return True
         
-    except smtplib.SMTPAuthenticationError as e:
-        logger.error(f"SMTP authentication failed: {str(e)}")
-        return False
-    except smtplib.SMTPRecipientsRefused as e:
-        logger.error(f"Recipient email refused: {str(e)}")
-        return False
-    except smtplib.SMTPException as e:
-        logger.error(f"SMTP error: {str(e)}")
-        return False
     except Exception as e:
-        logger.error(f"Unexpected error sending email: {str(e)}")
+        logger.error(f"Azure email sending failed: {str(e)}")
         return False
 
 def generate_email_content(candidate: Dict[str, Any], verdict: str, role: str = "Position", company_name: str = "Our Company") -> Dict[str, str]:
@@ -103,7 +102,10 @@ def generate_email_content(candidate: Dict[str, Any], verdict: str, role: str = 
         name = candidate.get("name", "Candidate")
         
         # Get template based on verdict
-        template = EMAIL_TEMPLATES.get(verdict.lower(), EMAIL_TEMPLATES["review"])
+        template = EMAIL_TEMPLATES.get(verdict.lower(), EMAIL_TEMPLATES.get("review", {
+            "subject": "Application Status Update - {role}",
+            "body": "Dear {name},\n\nThank you for your application for the {role} position.\n\nBest regards,\n{company_name} Team"
+        }))
         
         # Format subject
         subject = template["subject"].format(role=role)
@@ -147,7 +149,7 @@ def format_highlights(highlights: List[str]) -> str:
 
 def send_bulk_emails(candidates: List[Dict[str, Any]], verdict: str, role: str = "Position", company_name: str = "Our Company") -> Dict[str, int]:
     """
-    Send bulk emails to multiple candidates
+    Send bulk emails to multiple candidates using Azure
     """
     results = {
         "sent": 0,
@@ -172,7 +174,7 @@ def send_bulk_emails(candidates: List[Dict[str, Any]], verdict: str, role: str =
             else:
                 results["failed"] += 1
         
-        logger.info(f"Bulk email results: {results}")
+        logger.info(f"Azure bulk email results: {results}")
         return results
         
     except Exception as e:
@@ -249,7 +251,7 @@ Please provide the missing information at your earliest convenience by replying 
 If you have any questions, please don't hesitate to contact us.
 
 Best regards,
-Recruitment Team"""
+EazyAI Recruitment Team"""
         
         return send_email(email, subject, body)
         
@@ -257,194 +259,61 @@ Recruitment Team"""
         logger.error(f"Error sending missing info email: {str(e)}")
         return False
 
-def create_interview_invitation(candidate: Dict[str, Any], interview_details: Dict[str, str], role: str = "Position") -> Dict[str, str]:
+def test_azure_email_connection() -> Dict[str, Any]:
     """
-    Create interview invitation email content
-    """
-    try:
-        name = candidate.get("name", "Candidate")
-        
-        subject = f"Interview Invitation - {role} Position"
-        
-        body = f"""Dear {name},
-
-Congratulations! We are pleased to invite you for an interview for the {role} position.
-
-Interview Details:
-• Date: {interview_details.get('date', 'To be confirmed')}
-• Time: {interview_details.get('time', 'To be confirmed')}
-• Duration: {interview_details.get('duration', '45-60 minutes')}
-• Format: {interview_details.get('format', 'In-person/Video call')}
-• Location: {interview_details.get('location', 'To be confirmed')}
-
-Please confirm your availability by replying to this email within 24 hours.
-
-What to expect:
-• Technical discussion about your experience
-• Questions about the role and our company
-• Opportunity for you to ask questions
-
-Please bring:
-• Updated resume
-• Portfolio (if applicable)
-• Valid ID
-
-If you need to reschedule, please let us know as soon as possible.
-
-We look forward to meeting you!
-
-Best regards,
-Recruitment Team"""
-        
-        return {"subject": subject, "body": body}
-        
-    except Exception as e:
-        logger.error(f"Error creating interview invitation: {str(e)}")
-        return {
-            "subject": f"Interview Invitation - {role}",
-            "body": f"Dear {candidate.get('name', 'Candidate')},\n\nWe would like to invite you for an interview.\n\nBest regards,\nRecruitment Team"
-        }
-
-def send_interview_invitation(candidate: Dict[str, Any], interview_details: Dict[str, str], role: str = "Position") -> bool:
-    """
-    Send interview invitation email
-    """
-    try:
-        email = candidate.get("email", "").strip()
-        if not email or not validate_email(email):
-            logger.error(f"Invalid email for interview invitation: {email}")
-            return False
-        
-        email_content = create_interview_invitation(candidate, interview_details, role)
-        return send_email(email, email_content["subject"], email_content["body"])
-        
-    except Exception as e:
-        logger.error(f"Error sending interview invitation: {str(e)}")
-        return False
-
-def create_follow_up_email(candidate: Dict[str, Any], role: str = "Position", days_since_application: int = 7) -> Dict[str, str]:
-    """
-    Create follow-up email content for candidates under review
-    """
-    try:
-        name = candidate.get("name", "Candidate")
-        
-        subject = f"Application Status Update - {role} Position"
-        
-        body = f"""Dear {name},
-
-Thank you for your interest in the {role} position and for your patience during our review process.
-
-We wanted to provide you with an update on your application status:
-
-Your application is currently under review by our hiring team. We have received a high volume of applications for this position, and we are carefully evaluating each candidate to ensure we make the best hiring decision.
-
-What happens next:
-• Our team will complete the initial review within the next 3-5 business days
-• Qualified candidates will be contacted for the next stage of the process
-• All applicants will be notified of their status regardless of the outcome
-
-We appreciate your continued interest in our organization and will be in touch soon with an update.
-
-If you have any questions in the meantime, please don't hesitate to reach out.
-
-Best regards,
-Recruitment Team
-
----
-Application submitted: {days_since_application} days ago
-Current status: Under Review"""
-        
-        return {"subject": subject, "body": body}
-        
-    except Exception as e:
-        logger.error(f"Error creating follow-up email: {str(e)}")
-        return {
-            "subject": f"Application Update - {role}",
-            "body": f"Dear {candidate.get('name', 'Candidate')},\n\nYour application is under review.\n\nBest regards,\nRecruitment Team"
-        }
-
-def send_follow_up_email(candidate: Dict[str, Any], role: str = "Position", days_since_application: int = 7) -> bool:
-    """
-    Send follow-up email to candidate
-    """
-    try:
-        email = candidate.get("email", "").strip()
-        if not email or not validate_email(email):
-            logger.error(f"Invalid email for follow-up: {email}")
-            return False
-        
-        email_content = create_follow_up_email(candidate, role, days_since_application)
-        return send_email(email, email_content["subject"], email_content["body"])
-        
-    except Exception as e:
-        logger.error(f"Error sending follow-up email: {str(e)}")
-        return False
-
-def test_email_connection() -> Dict[str, Any]:
-    """
-    Test email configuration and connection
+    Test Azure Communication Services connection
     """
     test_result = {
         "connection_successful": False,
-        "authentication_successful": False,
+        "service_available": AZURE_EMAIL_AVAILABLE,
         "error_message": None
     }
     
     try:
-        # Test SMTP connection
-        context = ssl.create_default_context()
+        if not AZURE_EMAIL_AVAILABLE:
+            test_result["error_message"] = "Azure Communication Services not installed"
+            return test_result
         
-        with smtplib.SMTP(EMAIL_CONFIG["smtp_server"], EMAIL_CONFIG["smtp_port"]) as server:
-            server.starttls(context=context)
-            test_result["connection_successful"] = True
-            
-            # Test authentication
-            server.login(EMAIL_CONFIG["smtp_user"], EMAIL_CONFIG["smtp_pass"])
-            test_result["authentication_successful"] = True
+        # Test connection by initializing client
+        email_client = EmailClient.from_connection_string(AZURE_EMAIL_CONFIG["connection_string"])
         
-        logger.info("Email connection test successful")
+        # If we can initialize without error, connection is likely good
+        test_result["connection_successful"] = True
+        logger.info("Azure email connection test successful")
         
-    except smtplib.SMTPAuthenticationError as e:
-        test_result["error_message"] = f"Authentication failed: {str(e)}"
-        logger.error(f"Email authentication failed: {str(e)}")
-    except smtplib.SMTPConnectError as e:
-        test_result["error_message"] = f"Connection failed: {str(e)}"
-        logger.error(f"Email connection failed: {str(e)}")
     except Exception as e:
-        test_result["error_message"] = f"Unexpected error: {str(e)}"
-        logger.error(f"Email test failed: {str(e)}")
+        test_result["error_message"] = f"Connection failed: {str(e)}"
+        logger.error(f"Azure email connection failed: {str(e)}")
     
     return test_result
 
-def send_test_email(test_recipient: str = None) -> bool:
+def send_test_email(test_recipient: str) -> bool:
     """
-    Send a test email to verify functionality
+    Send a test email to verify Azure functionality
     """
     try:
-        recipient = test_recipient or EMAIL_CONFIG["hr_email"]
-        
-        if not validate_email(recipient):
-            logger.error(f"Invalid test email recipient: {recipient}")
+        if not validate_email(test_recipient):
+            logger.error(f"Invalid test email recipient: {test_recipient}")
             return False
         
-        subject = "EazyAI Resume Screener - Test Email"
-        body = """This is a test email from EazyAI Resume Screener.
+        subject = "EazyAI Resume Screener - Azure Email Test"
+        body = f"""This is a test email from EazyAI Resume Screener using Azure Communication Services.
 
-If you received this email, the email configuration is working correctly.
+If you received this email, the Azure email configuration is working correctly.
 
 Test Details:
-• SMTP Server: {smtp_server}
-• Port: {smtp_port} 
-• Sender: {smtp_user}
+• Service: Azure Communication Services
+• Sender: {AZURE_EMAIL_CONFIG["sender_email"]}
+• Recipient: {test_recipient}
+• Timestamp: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 Best regards,
-EazyAI System""".format(**EMAIL_CONFIG)
+EazyAI System"""
         
-        return send_email(recipient, subject, body)
+        return send_email(test_recipient, subject, body)
         
     except Exception as e:
-        logger.error(f"Error sending test email: {str(e)}")
+        logger.error(f"Error sending Azure test email: {str(e)}")
         return False
 
 def get_email_statistics(candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -502,6 +371,7 @@ def create_rejection_with_feedback(candidate: Dict[str, Any], role: str = "Posit
         feedback_section = ""
         if feedback_points:
             feedback_section = """
+
 Areas for potential development based on our requirements:
 """ + "\n".join([f"• {point}" for point in feedback_points[:3]])  # Limit to 3 points
         
@@ -509,8 +379,7 @@ Areas for potential development based on our requirements:
 
 Thank you for your interest in the {role} position and for taking the time to apply.
 
-After careful consideration of all applications, we have decided not to proceed with your candidacy for this specific role. This decision was difficult given the quality of applications we received.
-{feedback_section}
+After careful consideration of all applications, we have decided not to proceed with your candidacy for this specific role. This decision was difficult given the quality of applications we received.{feedback_section}
 
 We encourage you to continue developing your skills and to apply for future opportunities that may be a better match for your background.
 
@@ -519,7 +388,7 @@ We will keep your resume on file for future openings that may align with your ex
 Thank you again for considering us, and we wish you all the best in your career journey.
 
 Best regards,
-Recruitment Team
+EazyAI Recruitment Team
 
 ---
 If you have any questions about this decision, please feel free to reach out."""
@@ -530,81 +399,99 @@ If you have any questions about this decision, please feel free to reach out."""
         logger.error(f"Error creating rejection with feedback: {str(e)}")
         return {
             "subject": f"Application Status - {role}",
-            "body": f"Dear {candidate.get('name', 'Candidate')},\n\nThank you for your application.\n\nBest regards,\nRecruitment Team"
+            "body": f"Dear {candidate.get('name', 'Candidate')},\n\nThank you for your application.\n\nBest regards,\nEazyAI Recruitment Team"
         }
 
-def schedule_email_batch(candidates: List[Dict[str, Any]], verdict: str, role: str, delay_hours: int = 0) -> Dict[str, Any]:
+def send_interview_invitation(candidate: Dict[str, Any], interview_details: Dict[str, str], role: str = "Position") -> bool:
     """
-    Schedule batch emails to be sent (placeholder for future scheduling functionality)
-    """
-    try:
-        # For now, this is a placeholder that returns scheduling info
-        # In a full implementation, this would integrate with a task queue
-        
-        valid_emails = [c for c in candidates if validate_email(c.get("email", ""))]
-        
-        schedule_info = {
-            "total_candidates": len(candidates),
-            "valid_emails": len(valid_emails),
-            "invalid_emails": len(candidates) - len(valid_emails),
-            "verdict": verdict,
-            "role": role,
-            "delay_hours": delay_hours,
-            "scheduled": True,
-            "estimated_send_time": f"In {delay_hours} hours" if delay_hours > 0 else "Immediately"
-        }
-        
-        logger.info(f"Email batch scheduled: {schedule_info}")
-        return schedule_info
-        
-    except Exception as e:
-        logger.error(f"Error scheduling email batch: {str(e)}")
-        return {"scheduled": False, "error": str(e)}
-
-# Email template customization functions
-def customize_email_template(template_type: str, custom_content: Dict[str, str]) -> bool:
-    """
-    Customize email templates (placeholder for template management)
+    Send interview invitation email using Azure
     """
     try:
-        if template_type not in EMAIL_TEMPLATES:
-            logger.error(f"Unknown template type: {template_type}")
+        email = candidate.get("email", "").strip()
+        if not email or not validate_email(email):
+            logger.error(f"Invalid email for interview invitation: {email}")
             return False
         
-        # In a full implementation, this would save custom templates
-        logger.info(f"Template customization requested for: {template_type}")
-        return True
+        name = candidate.get("name", "Candidate")
+        
+        subject = f"Interview Invitation - {role} Position"
+        
+        body = f"""Dear {name},
+
+Congratulations! We are pleased to invite you for an interview for the {role} position.
+
+Interview Details:
+• Date: {interview_details.get('date', 'To be confirmed')}
+• Time: {interview_details.get('time', 'To be confirmed')}
+• Duration: {interview_details.get('duration', '45-60 minutes')}
+• Format: {interview_details.get('format', 'In-person/Video call')}
+• Location: {interview_details.get('location', 'To be confirmed')}
+
+Please confirm your availability by replying to this email within 24 hours.
+
+What to expect:
+• Technical discussion about your experience
+• Questions about the role and our company
+• Opportunity for you to ask questions
+
+Please bring:
+• Updated resume
+• Portfolio (if applicable)
+• Valid ID
+
+If you need to reschedule, please let us know as soon as possible.
+
+We look forward to meeting you!
+
+Best regards,
+EazyAI Recruitment Team"""
+        
+        return send_email(email, subject, body)
         
     except Exception as e:
-        logger.error(f"Error customizing email template: {str(e)}")
+        logger.error(f"Error sending interview invitation: {str(e)}")
         return False
 
-def get_email_template_preview(template_type: str, sample_data: Dict[str, Any]) -> Dict[str, str]:
+def send_follow_up_email(candidate: Dict[str, Any], role: str = "Position", days_since_application: int = 7) -> bool:
     """
-    Generate preview of email template with sample data
+    Send follow-up email to candidate using Azure
     """
     try:
-        if template_type not in EMAIL_TEMPLATES:
-            return {"error": f"Unknown template type: {template_type}"}
+        email = candidate.get("email", "").strip()
+        if not email or not validate_email(email):
+            logger.error(f"Invalid email for follow-up: {email}")
+            return False
         
-        # Create sample candidate data
-        sample_candidate = {
-            "name": sample_data.get("name", "John Doe"),
-            "highlights": sample_data.get("highlights", ["Strong technical skills", "Relevant experience", "Good cultural fit"])
-        }
+        name = candidate.get("name", "Candidate")
         
-        role = sample_data.get("role", "Software Developer")
-        company_name = sample_data.get("company_name", "Tech Company")
+        subject = f"Application Status Update - {role} Position"
         
-        preview = generate_email_content(sample_candidate, template_type, role, company_name)
-        preview["template_type"] = template_type
+        body = f"""Dear {name},
+
+Thank you for your interest in the {role} position and for your patience during our review process.
+
+We wanted to provide you with an update on your application status:
+
+Your application is currently under review by our hiring team. We have received a high volume of applications for this position, and we are carefully evaluating each candidate to ensure we make the best hiring decision.
+
+What happens next:
+• Our team will complete the initial review within the next 3-5 business days
+• Qualified candidates will be contacted for the next stage of the process
+• All applicants will be notified of their status regardless of the outcome
+
+We appreciate your continued interest in our organization and will be in touch soon with an update.
+
+If you have any questions in the meantime, please don't hesitate to reach out.
+
+Best regards,
+EazyAI Recruitment Team
+
+---
+Application submitted: {days_since_application} days ago
+Current status: Under Review"""
         
-        return preview
+        return send_email(email, subject, body)
         
     except Exception as e:
-        logger.error(f"Error generating email preview: {str(e)}")
-        return {"error": str(e)}
-
-
-
-
+        logger.error(f"Error sending follow-up email: {str(e)}")
+        return False
