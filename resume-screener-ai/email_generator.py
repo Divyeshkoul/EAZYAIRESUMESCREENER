@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 EMAIL_CONFIG = {
     "smtp_server": os.getenv("SMTP_SERVER", "smtp.gmail.com"),
     "smtp_port": int(os.getenv("SMTP_PORT", "587")),
-    "smtp_user": os.getenv("SMTP_USER", "demoprojectid3@gmail.com"),
-    "smtp_pass": os.getenv("SMTP_PASS", "hiikzyvfhopdumym"),
-    "hr_email": os.getenv("HR_EMAIL", "demoprojectid3@gmail.com")
+    "smtp_user": os.getenv("SMTP_USER", "eazyai.hevhire@gmail.com"),
+    "smtp_pass": os.getenv("SMTP_PASS", "nvogswtflbmjayte"),
+    "hr_email": os.getenv("HR_EMAIL", "eazyai.hevhire@gmail.com")
 }
 
 def validate_email(email: str) -> bool:
@@ -604,5 +604,6 @@ def get_email_template_preview(template_type: str, sample_data: Dict[str, Any]) 
     except Exception as e:
         logger.error(f"Error generating email preview: {str(e)}")
         return {"error": str(e)}
+
 
 
